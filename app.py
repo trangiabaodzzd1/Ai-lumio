@@ -1,366 +1,372 @@
-import os
-import io
-import streamlit as st
-from google import genai
-from google.genai import types
-from pypdf import PdfReader
 
-# ==========================================
-# LUMIO AI — PERSONAL LEARNING ASSISTANT
-# ==========================================
+import streamlit as st
+import sympy as sp
+from ddgs import DDGS
+from pypdf import PdfReader
+import io
+import re
+import random
+import urllib.parse
+
 st.set_page_config(
-    page_title="Lumio AI | Gia sư thông minh",
+    page_title="Lumio AI | No API",
     page_icon="🎓",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="wide"
 )
 
-def get_secret(name, default=""):
-    try:
-        value = st.secrets.get(name, default)
-        if value:
-            return value
-    except Exception:
-        pass
-    return os.getenv(name, default)
-
-API_KEY = get_secret("GEMINI_API_KEY")
-MODEL = get_secret("GEMINI_MODEL", "gemini-3.8-flash")
-
-# ==========================================
-# DESIGN
-# ==========================================
+# ===== GIAO DIỆN =====
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
-
 html, body, [class*="css"] {
     font-family: 'Be Vietnam Pro', sans-serif;
 }
 .stApp {
     background:
-      radial-gradient(ellipse at 0% 0%, #6366f115, transparent 38%),
-      var(--background-color);
+    radial-gradient(ellipse at 0% 0%, #7c3aed18, transparent 40%),
+    var(--background-color);
 }
-.block-container {
-    max-width: 1120px;
-    padding-top: 1.7rem;
-    padding-bottom: 3rem;
-}
+.block-container {max-width:1100px;padding-top:2rem}
 .hero {
-    padding: 30px;
-    border-radius: 24px;
-    color: white;
-    background: linear-gradient(120deg,#111827,#3730a3 60%,#087e8b);
-    margin-bottom: 24px;
-    border: 1px solid #ffffff20;
+    background:linear-gradient(120deg,#17152e,#4931a5,#087e8b);
+    color:white;padding:30px;border-radius:24px;margin-bottom:24px;
 }
-.hero h1 {font-size: clamp(28px,4vw,42px);font-weight:800;margin:8px 0}
-.hero p {color:#dbeafe;margin:0}
-.eyebrow {font-size:11px;letter-spacing:2px;color:#c4b5fd;font-weight:700}
+.hero h1 {font-size:clamp(28px,4vw,42px);font-weight:800}
+.hero p {color:#e0e7ff}
 div[data-testid="stChatMessage"] {
-    border:1px solid #64748b30;
-    border-radius:18px;
-    padding:14px;
+    border:1px solid #64748b35;border-radius:18px;padding:14px;
 }
-div.stButton>button {
-    border-radius:12px;
-    font-weight:600;
-    min-height:42px;
-}
-div[data-testid="stMetric"] {
-    border:1px solid #64748b35;
-    padding:12px;
-    border-radius:14px;
-}
-footer {visibility:hidden}
+div.stButton>button {border-radius:12px;min-height:42px}
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# SESSION STATE
-# ==========================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "document" not in st.session_state:
-    st.session_state.document = ""
-if "pending" not in st.session_state:
-    st.session_state.pending = None
+if "doc_text" not in st.session_state:
+    st.session_state.doc_text = ""
 
-# ==========================================
-# SIDEBAR
-# ==========================================
+# ===== CÔNG CỤ HỌC TẬP =====
+def search_web(query):
+    results = []
+    with DDGS() as ddgs:
+        for item in ddgs.text(query, max_results=6):
+            results.append({
+                "title": item.get("title", "Trang tham khảo"),
+                "url": item.get("href", ""),
+                "body": item.get("body", "")
+            })
+    return results
+
+def solve_math(text):
+    x = sp.symbols("x")
+    cleaned = text.replace("^", "**")
+    cleaned = cleaned.replace("×", "*").replace("÷", "/")
+    cleaned = cleaned.replace("−", "-")
+    try:
+        # Nhận dạng phương trình dạng ax^2+bx+c=0
+        patterns = [
+            r"([0-9xX\s\+\-\*\/\.\(\)\^]+=[0-9xX\s\+\-\*\/\.\(\)\^]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, cleaned)
+            if match:
+                equation = match.group(1).replace("X", "x")
+                left, right = equation.split("=", 1)
+                lhs = sp.sympify(left, locals={"x": x})
+                rhs = sp.sympify(right, locals={"x": x})
+                result = sp.solve(sp.Eq(lhs, rhs), x)
+                steps = sp.expand(lhs-rhs)
+                return (
+                    "### 🧮 Kết quả giải toán\n\n"
+                    f"**Phương trình:** `{equation}`\n\n"
+                    f"**Bước 1:** Chuyển vế: `{sp.simplify(steps)} = 0`\n\n"
+                    f"**Bước 2:** Giải phương trình theo x.\n\n"
+                    f"**Nghiệm tìm được:** `{result}`\n\n"
+                    "Hãy thay nghiệm vào phương trình ban đầu để kiểm tra."
+                )
+    except Exception:
+        return None
+    return None
+
+def make_quiz(subject, count=10):
+    banks = {
+        "Toán": [
+            ("2 + 3 = ?", ["4", "5", "6", "7"], 1),
+            ("12 × 8 = ?", ["86", "92", "96", "108"], 2),
+            ("Căn bậc hai của 81 là?", ["7", "8", "9", "10"], 2),
+            ("15% của 200 bằng?", ["20", "25", "30", "35"], 2),
+            ("2³ bằng?", ["4", "6", "8", "9"], 2),
+        ],
+        "Tiếng Anh": [
+            ("She ___ a student.", ["am", "is", "are", "be"], 1),
+            ("Past tense of go?", ["goed", "goes", "went", "gone"], 2),
+            ("Opposite of hot?", ["warm", "cold", "heat", "high"], 1),
+            ("Plural of child?", ["childs", "childes", "children", "child"], 2),
+            ("I have lived here ___ 2020.", ["for", "since", "at", "on"], 1),
+        ],
+        "Khoa học": [
+            ("Hành tinh gần Mặt Trời nhất?", ["Trái Đất", "Sao Kim", "Sao Thủy", "Sao Hỏa"], 2),
+            ("Công thức hóa học của nước?", ["CO2", "H2O", "O2", "NaCl"], 1),
+            ("Cây hấp thụ khí nào khi quang hợp?", ["O2", "N2", "CO2", "H2"], 2),
+            ("Đơn vị đo cường độ dòng điện?", ["Volt", "Ampe", "Watt", "Ohm"], 1),
+            ("Cơ quan bơm máu trong cơ thể?", ["Phổi", "Gan", "Tim", "Thận"], 2),
+        ],
+    }
+    bank = banks.get(subject, banks["Khoa học"])
+    questions = (bank * ((count // len(bank)) + 1))[:count]
+    random.shuffle(questions)
+    return questions
+
+# ===== SIDEBAR =====
 with st.sidebar:
     st.markdown("# ✨ Lumio AI")
-    st.caption("YOUR PERSONAL AI TUTOR")
+    st.caption("NO API KEY • STUDY SMARTER")
     st.divider()
 
     grade = st.selectbox(
         "🎓 Trình độ",
-        ["THCS", "THPT", "Đại học", "Tiểu học", "Tự học / Đi làm"],
-        index=1,
+        ["Tiểu học", "THCS", "THPT", "Đại học", "Tự học"]
     )
-
     subject = st.selectbox(
         "📚 Môn học",
-        [
-            "Tất cả môn học", "Toán", "Vật lý", "Hóa học",
-            "Sinh học", "Ngữ văn", "Tiếng Anh", "Lịch sử",
-            "Địa lý", "Tin học / Lập trình"
-        ],
+        ["Tất cả", "Toán", "Vật lý", "Hóa học",
+         "Sinh học", "Ngữ văn", "Tiếng Anh", "Tin học"]
     )
-
     mode = st.selectbox(
-        "🧠 Chế độ học",
-        [
-            "Gia sư thông minh",
-            "Giải bài từng bước",
-            "Ôn thi cấp tốc",
-            "Tóm tắt kiến thức",
-            "Tạo đề trắc nghiệm",
-            "Luyện tiếng Anh",
-            "Nghiên cứu chuyên sâu",
-        ],
+        "🧠 Chế độ",
+        ["Gia sư học tập", "Giải toán",
+         "Tìm kiếm Internet", "Tạo đề trắc nghiệm",
+         "Lập kế hoạch học", "Tóm tắt tài liệu"]
     )
-
-    web_on = st.toggle("🌐 Tìm kiếm Google", value=True)
 
     st.divider()
-    st.markdown("### 📄 Tài liệu học tập")
+    st.markdown("### 📄 Tài liệu")
     uploaded = st.file_uploader(
-        "Tải lên PDF hoặc TXT",
-        type=["pdf", "txt"],
+        "Tải PDF hoặc TXT", type=["pdf", "txt"]
     )
-
     if uploaded:
         try:
-            if uploaded.name.lower().endswith(".pdf"):
+            if uploaded.name.endswith(".pdf"):
                 pdf = PdfReader(io.BytesIO(uploaded.getvalue()))
-                content = "\n".join(
-                    page.extract_text() or "" for page in pdf.pages
-                )
+                st.session_state.doc_text = "\n".join(
+                    p.extract_text() or "" for p in pdf.pages
+                )[:20000]
             else:
-                content = uploaded.getvalue().decode(
+                st.session_state.doc_text = uploaded.getvalue().decode(
                     "utf-8", errors="replace"
-                )
-
-            st.session_state.document = content[:25000]
-            st.success("Đã đọc tài liệu!")
+                )[:20000]
+            st.success("Đã tải tài liệu!")
         except Exception as e:
-            st.error(f"Không đọc được tài liệu: {e}")
+            st.error(f"Không đọc được file: {e}")
 
-    if st.button("🗑️ Cuộc trò chuyện mới", use_container_width=True):
+    if st.button("🗑️ Xóa cuộc trò chuyện", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.pending = None
         st.rerun()
 
     st.divider()
-    st.caption("Powered by Google Gemini")
+    st.caption("Chạy bằng Python, không cần AI API.")
 
-# ==========================================
-# HEADER
-# ==========================================
+# ===== TRANG CHÍNH =====
 st.markdown("""
 <div class="hero">
-  <div class="eyebrow">PERSONAL LEARNING INTELLIGENCE</div>
-  <h1>Học thông minh hơn cùng Lumio ✨</h1>
-  <p>Hiểu sâu kiến thức · Giải bài từng bước · Khám phá tri thức mới</p>
+    <div style="letter-spacing:3px;font-size:11px;color:#c4b5fd">
+    YOUR PERSONAL LEARNING SPACE
+    </div>
+    <h1>Học thông minh hơn cùng Lumio ✨</h1>
+    <p>Học tập • Tra cứu web • Luyện thi • Giải bài</p>
 </div>
 """, unsafe_allow_html=True)
 
-a, b, c = st.columns(3)
-a.metric("🎯 Chế độ", mode)
-b.metric("📖 Môn học", subject)
-c.metric("🌐 Internet", "Đã bật" if web_on else "Đã tắt")
+c1, c2, c3 = st.columns(3)
+c1.metric("🎓 Trình độ", grade)
+c2.metric("📚 Môn học", subject)
+c3.metric("🔑 API key", "Không cần")
 
-# ==========================================
-# QUICK ACTIONS
-# ==========================================
-st.markdown("### 💡 Bạn muốn học gì hôm nay?")
-cols = st.columns(4)
+st.info(
+    "Lumio No API sử dụng công cụ học tập lập trình sẵn. "
+    "Đây không phải mô hình ngôn ngữ lớn; câu trả lời mở "
+    "cần dựa trên công cụ, dữ liệu và kết quả tìm kiếm."
+)
 
-prompts = [
-    "Giải thích một kiến thức khó",
-    "Lập kế hoạch ôn thi 7 ngày",
-    "Tạo 10 câu trắc nghiệm",
-    "Tóm tắt kiến thức trọng tâm",
+st.markdown("### ⚡ Bắt đầu nhanh")
+quick = st.columns(4)
+examples = [
+    "Giải phương trình x^2 - 5*x + 6 = 0",
+    "Tạo đề trắc nghiệm Toán",
+    "Tìm kiếm Internet về trí tuệ nhân tạo",
+    "Lập kế hoạch học trong 7 ngày",
 ]
+for i, example in enumerate(examples):
+    if quick[i].button(example, use_container_width=True):
+        st.session_state.quick_prompt = example
 
-for i, label in enumerate(prompts):
-    if cols[i].button(label, use_container_width=True):
-        st.session_state.pending = label
-        st.rerun()
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-# ==========================================
-# INSTRUCTIONS
-# ==========================================
-def build_instructions():
-    instruction = f"""
-Bạn là Lumio, một gia sư AI xuất sắc, thân thiện, kiên nhẫn,
-giải thích rõ ràng và khuyến khích học sinh tự suy nghĩ.
+        if msg.get("sources"):
+            with st.expander("🌐 Nguồn tham khảo"):
+                for s in msg["sources"]:
+                    st.markdown(f"- [{s['title']}]({s['url']})")
+        
+        if msg.get("quiz"):
+            for idx, q in enumerate(msg["quiz"]):
+                st.markdown(f"**Câu {idx+1}. {q[0]}**")
+                st.markdown(" · ".join(
+                    f"{'ABCD'[j]}. {v}"
+                    for j, v in enumerate(q[1])
+                ))
+                st.caption(f"Đáp án: {'ABCD'[q[2]]}")
 
-Ngôn ngữ mặc định: tiếng Việt.
-Trình độ người học: {grade}.
-Môn học ưu tiên: {subject}.
-Chế độ hiện tại: {mode}.
-
-QUY TẮC:
-1. Giải thích từ cơ bản đến nâng cao, phù hợp trình độ.
-2. Toán, Lý, Hóa: ghi dữ kiện, công thức, từng bước,
-   đơn vị, kết quả và kiểm tra tính hợp lý.
-3. Lập trình: đưa code dễ hiểu và hướng dẫn chạy.
-4. Văn học: phân tích luận điểm, dẫn chứng và cách lập luận.
-5. Trắc nghiệm: đưa câu hỏi, các lựa chọn, đáp án và giải thích.
-6. Ôn thi: chia kiến thức theo chủ đề, mức độ ưu tiên và lịch học.
-7. Không bịa nguồn, số liệu, đường dẫn hay trích dẫn.
-8. Khi tìm kiếm web, hãy tổng hợp từ nguồn phù hợp và
-   nêu rõ thông tin nào có thể đã thay đổi.
-9. Giúp người học hiểu cách làm, không chỉ đưa đáp án.
-10. Trình bày Markdown rõ ràng; dùng LaTeX khi cần.
-
-Nếu có tài liệu người dùng tải lên, ưu tiên dựa vào nội dung
-tài liệu. Phân biệt rõ nội dung tài liệu với kiến thức bên ngoài.
-
-TÀI LIỆU NGƯỜI DÙNG:
-{st.session_state.document[:25000]}
-"""
-    return instruction
-
-# ==========================================
-# CITATIONS FROM GOOGLE SEARCH
-# ==========================================
-def get_sources(response):
-    sources = []
-    seen = set()
-
-    try:
-        for candidate in response.candidates or []:
-            metadata = candidate.grounding_metadata
-            if not metadata:
-                continue
-
-            for chunk in metadata.grounding_chunks or []:
-                web = getattr(chunk, "web", None)
-                if web and web.uri and web.uri not in seen:
-                    seen.add(web.uri)
-                    sources.append({
-                        "title": web.title or web.uri,
-                        "url": web.uri,
-                    })
-    except Exception:
-        pass
-
-    return sources
-
-# ==========================================
-# CHAT HISTORY
-# ==========================================
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-        if message.get("sources"):
-            with st.expander("🔎 Nguồn tham khảo"):
-                for src in message["sources"]:
-                    st.markdown(f"- [{src['title']}]({src['url']})")
-
-# ==========================================
-# CHAT INPUT
-# ==========================================
-pending = st.session_state.pending
-typed = st.chat_input("Hỏi Lumio bất cứ điều gì...")
+typed = st.chat_input("Nhập câu hỏi học tập...")
 
 if typed:
     prompt = typed
-    st.session_state.pending = None
-elif pending:
-    prompt = pending
-    st.session_state.pending = None
+elif st.session_state.get("quick_prompt"):
+    prompt = st.session_state.pop("quick_prompt")
 else:
     prompt = None
 
 if prompt:
     st.session_state.messages.append({
-        "role": "user",
-        "content": prompt,
+        "role": "user", "content": prompt
     })
-
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    answer = ""
+    sources = []
+    quiz = None
+    lower = prompt.lower()
+
     with st.chat_message("assistant"):
-        placeholder = st.empty()
-
-        if not API_KEY:
-            answer = (
-                "🔑 Bạn chưa thêm GEMINI_API_KEY. "
-                "Hãy tạo key tại https://aistudio.google.com/apikey "
-                "và thêm vào Secrets trên Streamlit Cloud."
-            )
-            placeholder.warning(answer)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer,
-                "sources": [],
-            })
-        else:
-            try:
-                client = genai.Client(api_key=API_KEY)
-
-                history = []
-                for msg in st.session_state.messages[-17:]:
-                    history.append(types.Content(
-                        role="user" if msg["role"] == "user" else "model",
-                        parts=[types.Part.from_text(text=msg["content"])],
-                    ))
-
-                config_args = {
-                    "system_instruction": build_instructions(),
-                    "temperature": 0.7,
-                    "max_output_tokens": 4096,
-                }
-
-                if web_on:
-                    config_args["tools"] = [
-                        types.Tool(
-                            google_search=types.GoogleSearch()
+        with st.spinner("Lumio đang xử lý..."):
+            if any(k in lower for k in [
+                "tìm kiếm", "tra cứu", "internet", "google", "mới nhất"
+            ]) or mode == "Tìm kiếm Internet":
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(prompt, max_results=6))
+                    if results:
+                        answer = "### 🌐 Kết quả tìm kiếm Internet\n\n"
+                        answer += (
+                            "Đây là các kết quả từ công cụ tìm kiếm. "
+                            "Hãy mở nguồn để đọc và xác minh thông tin.\n\n"
                         )
-                    ]
-
-                config = types.GenerateContentConfig(**config_args)
-
-                with st.spinner("Lumio đang suy nghĩ..."):
-                    response = client.models.generate_content(
-                        model=MODEL,
-                        contents=history,
-                        config=config,
+                        for i, r in enumerate(results, 1):
+                            title = r.get("title", "Trang web")
+                            url = r.get("href", "")
+                            body = r.get("body", "")
+                            answer += f"**{i}. [{title}]({url})**\n\n{body}\n\n"
+                            sources.append({
+                                "title": title, "url": url
+                            })
+                    else:
+                        answer = "Không tìm thấy kết quả. Hãy thử từ khóa khác."
+                except Exception as e:
+                    answer = (
+                        "Không kết nối được dịch vụ tìm kiếm. "
+                        "Bạn có thể thử lại sau hoặc kiểm tra kết nối mạng.\n\n"
+                        f"Chi tiết: `{e}`"
                     )
 
-                answer = response.text or "AI chưa tạo được câu trả lời."
-                sources = get_sources(response)
-
-                placeholder.markdown(answer)
-
-                if sources:
-                    with st.expander("🌐 Nguồn tham khảo từ Google"):
-                        for src in sources:
-                            st.markdown(f"- [{src['title']}]({src['url']})")
-
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer,
-                    "sources": sources,
-                })
-
-            except Exception as e:
-                st.error(
-                    "Chưa gọi được Gemini. Hãy kiểm tra API key, "
-                    "model, kết nối mạng và hạn mức API."
+            elif "trắc nghiệm" in lower or "đề thi" in lower or mode == "Tạo đề trắc nghiệm":
+                quiz_subject = (
+                    "Toán" if "toán" in lower or subject == "Toán"
+                    else "Tiếng Anh" if "anh" in lower or subject == "Tiếng Anh"
+                    else "Khoa học"
                 )
-                st.caption(f"Chi tiết lỗi: {e}")
+                quiz = make_quiz(quiz_subject, 10)
+                answer = f"### 📝 Đề luyện tập: {quiz_subject}\n\n"
+                answer += "\n".join(
+                    f"**Câu {i+1}. {q[0]}**\n\n"
+                    + "\n".join(
+                        f"{'ABCD'[j]}. {v}"
+                        for j, v in enumerate(q[1])
+                    )
+                    for i, q in enumerate(quiz)
+                )
+                answer += "\n\nĐáp án được lưu bên dưới để bạn tự kiểm tra."
 
-st.divider()
-st.caption(
-    "Lumio AI • Hãy kiểm tra nguồn tham khảo với thông tin quan trọng. "
-    "AI đôi khi có thể trả lời sai."
-)
+            elif mode == "Giải toán" or re.search(r"\d+\s*[\+\-\*/^=]", prompt):
+                result = solve_math(prompt)
+                if result:
+                    answer = result
+                else:
+                    answer = (
+                        "Mình chưa nhận dạng được phương trình. "
+                        "Bạn thử nhập dạng `x^2 - 5*x + 6 = 0` nhé."
+                    )
+
+            elif "kế hoạch" in lower or "lịch học" in lower:
+                answer = f"""### 🗓️ Kế hoạch học tập 7 ngày
+
+**Trình độ:** {grade}  
+**Môn học:** {subject}
+
+- **Ngày 1:** Kiểm tra kiến thức hiện tại, liệt kê phần chưa hiểu.
+- **Ngày 2:** Học lý thuyết nền tảng và ghi chú.
+- **Ngày 3:** Làm bài tập cơ bản.
+- **Ngày 4:** Luyện bài tập mức trung bình.
+- **Ngày 5:** Giải bài nâng cao và sửa lỗi.
+- **Ngày 6:** Làm đề trong thời gian giới hạn.
+- **Ngày 7:** Ôn lại lỗi sai và tự kiểm tra.
+
+Mỗi ngày hãy thử học 2 phiên 25 phút, nghỉ 5 phút giữa các phiên.
+Đây là lịch mẫu; hãy điều chỉnh theo thời gian và mục tiêu của bạn.
+"""
+
+            elif "tóm tắt" in lower or mode == "Tóm tắt tài liệu":
+                if st.session_state.doc_text:
+                    text = st.session_state.doc_text
+                    sentences = re.split(r"(?<=[.!?])\s+", text)
+                    answer = "### 📖 Nội dung tài liệu\n\n"
+                    answer += "\n".join(
+                        f"- {s.strip()}" for s in sentences[:12] if s.strip()
+                    )
+                    answer += (
+                        "\n\n*Đây là phần trích lọc theo câu, "
+                        "chưa phải bản tóm tắt do mô hình AI tạo ra.*"
+                    )
+                else:
+                    answer = "Hãy tải PDF hoặc TXT ở thanh bên trước nhé."
+
+            else:
+                result = solve_math(prompt)
+                if result:
+                    answer = result
+                elif st.session_state.doc_text:
+                    answer = (
+                        "### 📚 Hỗ trợ dựa trên tài liệu\n\n"
+                        + st.session_state.doc_text[:5000]
+                        + "\n\nHãy hỏi cụ thể hơn để mình trích nội dung phù hợp."
+                    )
+                else:
+                    query = urllib.parse.quote(prompt)
+                    answer = f"""### 🎓 Lumio Study Assistant
+
+Mình chưa có mô hình AI ngôn ngữ để tự suy luận câu hỏi mở, nhưng có thể giúp bạn tra cứu và học tập.
+
+**Câu hỏi của bạn:** {prompt}
+
+**Bạn có thể:**
+- Chọn chế độ **Tìm kiếm Internet** để tìm tài liệu.
+- Chọn **Giải toán** để giải phương trình cơ bản.
+- Chọn **Tạo đề trắc nghiệm** để luyện tập.
+- Tải PDF/TXT để trích lọc nội dung.
+
+🔎 [Tìm câu hỏi này trên Google](https://www.google.com/search?q={query})
+"""
+
+        st.markdown(answer)
+        if sources:
+            with st.expander("🔗 Nguồn tham khảo"):
+                for s in sources:
+                    st.markdown(f"- [{s['title']}]({s['url']})")
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+        "sources": sources,
+        "quiz": quiz,
+    })
